@@ -2,7 +2,6 @@ from llama_index.core import Settings
 from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.llms.openai import OpenAI
-from statsmodels.datasets.utils import load_csv
 from ai_agents.tools import *
 
 # Create function tools
@@ -11,7 +10,8 @@ analyze_data_quality_tool = FunctionTool.from_defaults(fn=analyze_data_quality)
 clean_data_tool = FunctionTool.from_defaults(fn=clean_data)
 
 # Initialize the OpenAI LLM
-llm = Settings.llm
+llm = OpenAI(model="gpt-3.5-turbo")
+Settings.llm = llm
 
 # Create the data preparation agent
 data_prep_agent = FunctionAgent(

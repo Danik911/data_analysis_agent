@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data_analysis_agent"
+version = "0.1.0"
+description = "A data analysis agent using LlamaIndex for analyzing CSV data"
+readme = "README.md"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "pandas",
+    "llama-index",
+    "llama-index-llms-openai",
+    "llama-index-vector-stores-faiss",
+    "llama-index-embeddings-openai",
+    "python-dotenv",
+    "nest_asyncio",
+    "jupyterlab",
+    "ipykernel"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort"
+]
+
+[tool.setuptools]
+packages = ["ai_agents", "events"]

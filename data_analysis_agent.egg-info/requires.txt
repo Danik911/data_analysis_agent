@@ -1,0 +1,14 @@
+pandas
+llama-index
+llama-index-llms-openai
+llama-index-vector-stores-faiss
+llama-index-embeddings-openai
+python-dotenv
+nest_asyncio
+jupyterlab
+ipykernel
+
+[dev]
+pytest
+black
+isort

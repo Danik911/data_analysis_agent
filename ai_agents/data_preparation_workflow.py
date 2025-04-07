@@ -1,140 +1,137 @@
-from llama_index.core.workflow import Workflow, Context, StartEvent, step, StopEvent, Event
+import asyncio
+from typing import Optional, Union
+import pandas as pd
+from llama_index.core.workflow import Workflow, Context, step, Event, StartEvent, StopEvent
 
 from ai_agents.agents import data_prep_agent
-from ai_agents.tools import analyze_data_quality, clean_data
-from events import InputRequiredEvent, DataPreparedEvent, HumanResponseEvent, DataLoadedEvent
+from ai_agents.tools import analyze_data_quality, clean_data, load_csv
+from ai_agents.events import (
+    InputRequiredEvent, DataPreparedEvent, HumanResponseEvent, 
+    DataLoadedEvent
+)
 
 
 class DataPreparationWorkflow(Workflow):
+    """Workflow for preparing data for analysis."""
 
     @step
-    async def load_data(self, ctx: Context, ev: StartEvent) -> DataLoadedEvent | InputRequiredEvent:
+    async def load_data(self, ctx: Context, ev: StartEvent) -> Union[DataLoadedEvent, InputRequiredEvent]:
         """Load CSV data and validate its structure."""
-        # Check if filename is provided
-        if not hasattr(ev, 'filename'):
+        # Check if filename is provided - now we explicitly accept StartEvent
+        if not hasattr(ev, 'filename') or not ev.filename:
             return InputRequiredEvent(
                 question="Please provide the CSV filename to analyze:",
                 context={},
                 step_name="load_data"
             )
 
-        # Use the agent to load the file
-        # Replace astream_chat with async_chat
-        load_response = await data_prep_agent.async_chat(
-            f"Please load the CSV file named {ev.filename} and provide a brief summary of its contents."
-        )
-
-        # Since async_chat doesn't stream, we can directly get the response
-        result = str(load_response)
-
-        # Extract DataFrame from context
-        df = await ctx.get("current_dataframe")
-        if df is None:
+        # Use direct tool call instead of agent chat
+        try:
+            df = await load_csv(ctx, ev.filename)
+            await ctx.set("current_dataframe", df)
+            
+            # Get basic metadata
+            metadata = {
+                "columns": list(df.columns),
+                "rows": len(df),
+                "dtypes": {col: str(df[col].dtype) for col in df.columns}
+            }
+            
+            return DataLoadedEvent(
+                filename=ev.filename,
+                dataframe=df,
+                metadata=metadata
+            )
+        except Exception as e:
             return InputRequiredEvent(
                 question=f"I couldn't load the file {ev.filename}. Please provide a valid CSV filename:",
-                context={"error": "File not found or invalid format"},
+                context={"error": str(e)},
                 step_name="load_data"
             )
 
-        # Get basic metadata
-        metadata = {
-            "columns": list(df.columns),
-            "rows": len(df),
-            "dtypes": {col: str(df[col].dtype) for col in df.columns}
-        }
-
-        return DataLoadedEvent(
-            filename=ev.filename,
-            dataframe=df,
-            metadata=metadata
-        )
-
     @step
-    async def handle_input(self, ctx: Context, ev: InputRequiredEvent) -> HumanResponseEvent:
-        """Handle user input requests and convert them to events the workflow can use."""
-        # Write the question to the stream so the user can see it
-        ctx.write_event_to_stream(ev)
-
-        # Wait for the human response
-        human_response = await ctx.wait_for_event(
-            HumanResponseEvent,
-            requirements={"step_name": ev.step_name}
-        )
-
-        # Return the human response directly
-        return human_response
-
-    @step
-    async def prepare_data(self, ctx: Context,
-                           ev: DataLoadedEvent | HumanResponseEvent) -> DataPreparedEvent | InputRequiredEvent:
-        """Clean and prepare data for analysis."""
-        # If this is a human response
-        if isinstance(ev, HumanResponseEvent) and ev.step_name == "prepare_data":
-            # Process human response
-            # Get the current data quality issues
-            data_quality = await ctx.get("data_quality")
-            cleaning_actions = eval(ev.response)  # Be careful with eval in production
-
-            # Use the agent to clean the data
-            df = await ctx.get("current_dataframe")
-            cleaned_df, cleaning_summary = await clean_data(ctx, df, cleaning_actions)
-
-            # Save cleaned dataframe to context
-            await ctx.set("current_dataframe", cleaned_df)
-
-            return DataPreparedEvent(
-                dataframe=cleaned_df,
-                metadata={"columns": list(cleaned_df.columns), "rows": len(cleaned_df)},
-                cleaning_summary=cleaning_summary
-            )
-
-        # If this is from the data loading step
+    async def analyze_quality(self, ctx: Context, ev: DataLoadedEvent) -> Union[DataPreparedEvent, StopEvent]:
+        """Analyze data quality and suggest cleaning operations."""
         df = ev.dataframe
-
-        # Use the agent to analyze data quality
-        quality_report = await analyze_data_quality(ctx, df)
-
-        # Save data quality and dataframe to context
-        await ctx.set("data_quality", quality_report)
         await ctx.set("current_dataframe", df)
-
-        # Create a suggested cleaning plan based on quality issues
-        suggested_cleaning = {}
-
-        # Suggest handling missing values
+        
+        # Get metadata from the input event
+        metadata = ev.metadata
+        
+        # Analyze data quality
+        quality_report = await analyze_data_quality(ctx, df)
+        
+        # Determine cleaning actions based on quality report
+        cleaning_actions = await self._suggest_cleaning_actions(quality_report)
+        
+        if not cleaning_actions:
+            return StopEvent(
+                reason="No cleaning actions required",
+                result=DataPreparedEvent(
+                    dataframe=df,
+                    cleaning_summary={},
+                    quality_report=quality_report,
+                    metadata=metadata  # Add missing metadata field
+                )
+            )
+            
+        # Clean the data
+        cleaned_df, cleaning_summary = await clean_data(ctx, df, cleaning_actions)
+        
+        return DataPreparedEvent(
+            dataframe=cleaned_df,
+            cleaning_summary=cleaning_summary,
+            quality_report=quality_report,
+            metadata=metadata  # Add missing metadata field
+        )
+        
+    async def _suggest_cleaning_actions(self, quality_report: dict) -> dict:
+        """Suggest cleaning actions based on quality report."""
+        cleaning_actions = {}
+        
+        # Handle missing values
         if quality_report.get("missing_values"):
-            suggested_cleaning["handle_missing"] = {}
+            cleaning_actions["handle_missing"] = {}
             for col, count in quality_report["missing_values"].items():
+                # Use appropriate strategy based on column type
                 col_type = quality_report["data_types"].get(col)
-                if 'float' in col_type or 'int' in col_type:
-                    suggested_cleaning["handle_missing"][col] = "mean"
+                if "float" in str(col_type) or "int" in str(col_type):
+                    cleaning_actions["handle_missing"][col] = "mean"
                 else:
-                    suggested_cleaning["handle_missing"][col] = "mode"
+                    cleaning_actions["handle_missing"][col] = "mode"
+        
+        return cleaning_actions
 
-        # Ask user for confirmation on cleaning actions
-        return InputRequiredEvent(
-            question="I've analyzed the data and found some issues. Here's a suggested cleaning plan. Please modify as needed:",
-            context={
-                "data_quality": quality_report,
-                "suggested_cleaning": suggested_cleaning
-            },
-            step_name="prepare_data"
-        )
 
-    @step
-    async def analyze_data(self, ctx: Context, ev: DataPreparedEvent) -> StopEvent:
-        """Analyze the prepared data and finish the workflow."""
-        # Store the prepared dataframe for use in subsequent workflows
-        await ctx.set("prepared_dataframe", ev.dataframe)
-
-        # Here you would typically do some analysis or call another agent
-        # For now we'll just return a success message
-
-        return StopEvent(
-            result={
-                "status": "success",
-                "message": "Data preparation completed successfully",
-                "dataframe_shape": f"{ev.metadata['rows']} rows, {len(ev.metadata['columns'])} columns",
-                "cleaning_summary": ev.cleaning_summary
-            }
-        )
+async def run_data_preparation_pipeline(filename: str) -> Optional[DataPreparedEvent]:
+    """Run the full data preparation pipeline."""
+    workflow = DataPreparationWorkflow()
+    ctx = Context(workflow=workflow)  # Fixed: pass the workflow to Context
+    
+    # Start with loading the data
+    event = StartEvent(filename=filename)
+    
+    while True:
+        if isinstance(event, StartEvent):
+            event = await workflow.load_data(ctx, event)
+            
+        elif isinstance(event, DataLoadedEvent):
+            event = await workflow.analyze_quality(ctx, event)
+            
+        elif isinstance(event, InputRequiredEvent):
+            # In a notebook/script environment, we'd prompt the user
+            # For simplicity, we'll just return None here
+            print(f"Input required: {event.question}")
+            return None
+            
+        elif isinstance(event, DataPreparedEvent):
+            return event
+            
+        elif isinstance(event, StopEvent):
+            if hasattr(event, 'result') and event.result:
+                return event.result
+            return None
+            
+        else:
+            print(f"Unexpected event type: {type(event)}")
+            return None
