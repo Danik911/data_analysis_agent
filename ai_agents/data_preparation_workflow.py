@@ -3,8 +3,9 @@ from typing import Optional, Union
 import pandas as pd
 from llama_index.core.workflow import Workflow, Context, step, Event, StartEvent, StopEvent
 
-from ai_agents.agents import data_prep_agent
-from ai_agents.tools import analyze_data_quality, clean_data, load_csv
+from ai_agents.agents.analysis_agent import data_prep_agent
+# Add missing import for analyze_data_quality from the correct module
+from ai_agents.tools.data_analysis_tool import analyze_data_quality, clean_data, load_csv
 from ai_agents.events import (
     InputRequiredEvent, DataPreparedEvent, HumanResponseEvent, 
     DataLoadedEvent
